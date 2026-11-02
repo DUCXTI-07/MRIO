@@ -1,92 +1,75 @@
-from django.shortcuts import render
-from rest_framework import status
-from rest_framework.response import Response
-from rest_framework.views import APIView
-from rest_framework.generics import ListAPIView
-from .models import Manual, QuestionRecord, Machine
-from .serializers import (
-    ManualUploadSerializer,
-    QuerySerializer,
-    QuestionRecordSerializer,
-    MachineSerializer,
-)
-from .permissions import IsAdministrator, IsEngineer, IsSupervisor
-from .utils import ingest_manual_pdf
-from .rag import retrieve_and_generate_answer
+import os
+from django.http import JsonResponse
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from google import genai
+from .models import Machine, DocumentChunk, QuestionRecord
 
 
-class ManualUploadView(APIView):
-  """Administrator-only endpoint to upload and index equipment manuals."""
-  permission_classes = [IsAdministrator]
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def engineer_query_view(request):
+  """Handles engineer queries using RAG context and the Gemini API."""
+  data = request.data
+  machine_id = data.get('machine_id')
+  user_question = data.get('question')
 
-  def post(self, request):
-    serializer = ManualUploadSerializer(data=request.data)
-    if serializer.is_valid():
-      manual = serializer.save()
-      ingest_manual_pdf(manual)
-      return Response(
-          {
-              "message": (
-                  "Manual uploaded, parsed, and indexed successfully."
-              ),
-              "manual_id": manual.id,
-          },
-          status=status.HTTP_201_CREATED,
-      )
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+  if not machine_id or not user_question:
+    return JsonResponse(
+        {'error': 'machine_id and question are required.'}, status=400
+    )
 
+  try:
+    machine = Machine.objects.get(machine_id=machine_id)
+  except Machine.DoesNotExist:
+    return JsonResponse({'error': 'Machine not found.'}, status=404)
 
-class EngineerQueryView(APIView):
-  """Engineer endpoint to submit maintenance questions with machine context."""
-  permission_classes = [IsEngineer]
+  # 1. Retrieve relevant document chunks for this specific machine (Machine-Isolated RAG)
+  # Simple keyword/text matching or vector similarity can be used here
+  chunks = DocumentChunk.objects.filter(manual__machine=machine)[:5]
+  context_text = '\n\n'.join([chunk.content for chunk in chunks])
 
-  def post(self, request):
-    serializer = QuerySerializer(data=request.data)
-    if serializer.is_valid():
-      machine_id = serializer.validated_data["machine_id"]
-      query_text = serializer.validated_data["query"]
+  if not context_text:
+    context_text = 'No manuals currently uploaded for this machine.'
 
-      result = retrieve_and_generate_answer(machine_id, query_text)
+  # 2. Initialize Gemini API Client
+  # Ensure GEMINI_API_KEY is set in your environment variables
+  client = genai.Client()
 
-      machine_obj = Machine.objects.get(machine_id=machine_id)
-      QuestionRecord.objects.create(
-          user=request.user,
-          machine=machine_obj,
-          query=query_text,
-          answer=result["answer"],
-          sources=result["sources"],
-          status=result["status"],
-      )
+  # 3. Construct the RAG Prompt
+  prompt = f"""
+    You are an expert industrial maintenance assistant. Answer the engineer's question accurately 
+    using ONLY the provided manual context below. If the answer is not in the context, state that 
+    the manual does not contain this information. Always cite page numbers or sections if available.
 
-      return Response(result, status=status.HTTP_200_OK)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    ---
+    MANUAL CONTEXT:
+    {context_text}
+    ---
 
+    EQUIPMENT: {machine.name} ({machine.machine_id})
+    ENGINEER QUESTION: {user_question}
+    """
 
-class SupervisorHistoryView(ListAPIView):
-  """Supervisor read-only endpoint to review question history and audit logs."""
-  permission_classes = [IsSupervisor]
-  queryset = QuestionRecord.objects.all().order_by("-timestamp")
-  serializer_class = QuestionRecordSerializer
+  # 4. Generate response from Gemini
+  response = client.models.generate_content(
+      model='gemini-2.5-flash',
+      contents=prompt,
+  )
 
+  answer_text = response.text
 
-def dashboard_view(request):
-  """Renders the frontend dashboard HTML template."""
-  return render(request, "core/dashboard.html")
+  # 5. Log the query for supervisor audit history
+  QuestionRecord.objects.create(
+      user=request.user,
+      machine=machine,
+      question=user_question,
+      answer=answer_text,
+  )
 
-
-class MachineListView(ListAPIView):
-  """Read-only endpoint to list all registered machines for frontend selection."""
-  queryset = Machine.objects.all()
-  serializer_class = MachineSerializer
-
-
-class ManualListView(ListAPIView):
-  """Read-only endpoint to list manuals, optionally filtered by machine_id."""
-  serializer_class = ManualUploadSerializer
-
-  def get_queryset(self):
-    queryset = Manual.objects.all()
-    machine_id = self.request.query_params.get("machine_id")
-    if machine_id:
-      queryset = queryset.filter(machine__machine_id=machine_id)
-    return queryset
+  return JsonResponse({
+      'machine': machine.name,
+      'question': user_question,
+      'answer': answer_text,
+      'citations_used': len(chunks),
+  })
