@@ -27,6 +27,23 @@ An enterprise-grade, role-protected RAG (Retrieval-Augmented Generation) mainten
 
 ---
 
+## 🚀 Deploying to Render
+
+1. Connect this repository to Render and choose **Blueprint** deployment so it
+   reads `render.yaml`.
+2. Render provisions the web service and PostgreSQL database. The blueprint
+   generates `DJANGO_SECRET_KEY`; do not replace it with a committed secret.
+3. Wait for the first deployment to finish, then open the service URL and create
+   an account using the sign-up page.
+
+The web process applies database migrations at startup and serves collected
+static files with WhiteNoise. For local development, set `DJANGO_SECRET_KEY`
+and `DJANGO_DEBUG=True` before running `python manage.py runserver`.
+Set `GEMINI_API_KEY` in the Render service environment to enable Gemini answers;
+without it, the app uses its local machine-isolated manual retrieval.
+
+---
+
 ## 📂 Project Structure
 
 ```text

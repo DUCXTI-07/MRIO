@@ -1,29 +1,24 @@
-import fitz  # PyMuPDF
+"""Manual processing helpers."""
+
+import pymupdf
+
 from .models import DocumentChunk
 
 
 def ingest_manual_pdf(manual_instance):
-  """Opens an uploaded Manual PDF using PyMuPDF, extracts text page-by-page,
+    """Extract non-empty PDF pages and store them as manual chunks."""
+    chunks = []
+    with pymupdf.open(manual_instance.pdf_file.path) as document:
+        for page_number, page in enumerate(document, start=1):
+            text = page.get_text()
+            if text.strip():
+                chunks.append(
+                    DocumentChunk(
+                        manual=manual_instance,
+                        page_number=page_number,
+                        text_content=text,
+                    )
+                )
 
-  and saves each page as a DocumentChunk while preserving exact page numbers.
-  """
-  pdf_path = manual_instance.pdf_file.path
-  doc = fitz.open(pdf_path)
-
-  # Clear any existing chunks for this manual if re-indexing
-  manual_instance.chunks.all().delete()
-
-  for page_index in range(len(doc)):
-    page = doc[page_index]
-    text = page.get_text()
-
-    if text.strip():  # Avoid storing blank pages
-      # Page 1 of the PDF counts as PDF page 1 matching printed convention
-      DocumentChunk.objects.create(
-          manual=manual_instance,
-          page_number=page_index + 1,
-          text_content=text,
-      )
-
-  doc.close()
-  
+    manual_instance.chunks.all().delete()
+    DocumentChunk.objects.bulk_create(chunks)

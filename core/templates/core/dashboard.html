@@ -8,20 +8,23 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
 <body class="bg-light">
+    <form id="csrfTokenForm" hidden>
+        {% csrf_token %}
+    </form>
     <nav class="navbar navbar-dark bg-dark shadow-sm">
         <div class="container-fluid">
             <span class="navbar-brand mb-0 h1">⚙️ Manufacturing Manual Assistant</span>
-            <span class="text-white-50">Role-Protected RAG Workspace</span>
+            <span class="text-white-50">Maintenance Assistant</span>
         </div>
     </nav>
 
     <div class="container my-5">
         <div class="row g-4">
-            <!-- Engineer Query Section -->
+            <!-- Maintenance Query Section -->
             <div class="col-lg-6">
                 <div class="card shadow-sm h-100">
                     <div class="card-header bg-primary text-white">
-                        <h5 class="mb-0">🔧 Engineer Query Console</h5>
+                        <h5 class="mb-0">🔧 Maintenance Query Console</h5>
                     </div>
                     <div class="card-body">
                         <div class="mb-3">
@@ -58,19 +61,6 @@
                     </div>
                 </div>
 
-                <div class="card shadow-sm">
-                    <div class="card-header bg-dark text-white">
-                        <h5 class="mb-0">📋 System Status & Guidelines</h5>
-                    </div>
-                    <div class="card-body">
-                        <p class="text-muted mb-2">Welcome to the Nexus Four secure maintenance portal. Use this dashboard to query machine manuals under strict machine isolation guardrails.</p>
-                        <ul class="list-group list-group-flush mb-3">
-                            <li class="list-group-item">🔒 <strong>Engineers</strong>: Restricted from uploading manuals; query isolated data securely.</li>
-                            <li class="list-group-item">📤 <strong>Administrators</strong>: Authorized to register and upload official equipment PDFs.</li>
-                            <li class="list-group-item">📊 <strong>Supervisors</strong>: Full read-only audit log access via API.</li>
-                        </ul>
-                    </div>
-                </div>
             </div>
         </div>
     </div>
@@ -80,16 +70,30 @@
         // Load machines into the dropdown on page load
         async function loadMachines() {
             try {
-                const response = await fetch('/api/machines/');
+                const response = await fetch('/api/machines/', {
+                    credentials: 'same-origin'
+                });
+                if (!response.ok) {
+                    throw new Error(`Request failed (${response.status}).`);
+                }
                 const machines = await response.json();
                 const select = document.getElementById('machineSelect');
-                select.innerHTML = '<option value="">Select a machine...</option>';
-                machines.forEach(m => {
-                    select.innerHTML += `<option value="${m.machine_id}">${m.name} (${m.machine_id}) - ${m.description}</option>`;
+                select.replaceChildren(new Option('Select a machine...', ''));
+                machines.forEach(machine => {
+                    const label = `${machine.name} (${machine.machine_id})`;
+                    const description = machine.description
+                        ? ` - ${machine.description}`
+                        : '';
+                    select.add(new Option(
+                        `${label}${description}`,
+                        machine.machine_id
+                    ));
                 });
             } catch (err) {
                 console.error('Failed to load machines:', err);
-                document.getElementById('machineSelect').innerHTML = '<option value="">Failed to load machines</option>';
+                document.getElementById('machineSelect').replaceChildren(
+                    new Option('Failed to load machines', '')
+                );
             }
         }
 
@@ -99,28 +103,97 @@
             const manualListDiv = document.getElementById('availableManuals');
             
             if (!machineId) {
-                manualListDiv.innerHTML = '<span class="text-muted">Select a machine to see its manuals</span>';
+                showMessage(
+                    manualListDiv,
+                    'Select a machine to see its manuals.'
+                );
                 return;
             }
 
             try {
-                const response = await fetch(`/api/manuals/?machine_id=${machineId}`);
+                const response = await fetch(
+                    `/api/manuals/?machine_id=${encodeURIComponent(machineId)}`,
+                    { credentials: 'same-origin' }
+                );
+                if (!response.ok) {
+                    throw new Error(`Request failed (${response.status}).`);
+                }
                 const manuals = await response.json();
                 if (manuals.length === 0) {
-                    manualListDiv.innerHTML = '<span class="text-warning">No manuals uploaded for this machine yet.</span>';
+                    showMessage(
+                        manualListDiv,
+                        'No manuals uploaded for this machine yet.',
+                        'text-warning'
+                    );
                     return;
                 }
-                let html = '<ul class="list-group">';
-                manuals.forEach(man => {
-                    html += `<li class="list-group-item d-flex justify-content-between align-items-center">
-                        ${man.title} <span class="badge bg-secondary">Rev: ${man.revision}</span>
-                    </li>`;
+                const list = document.createElement('ul');
+                list.className = 'list-group';
+                manuals.forEach(manual => {
+                    const item = document.createElement('li');
+                    item.className =
+                        'list-group-item d-flex justify-content-between align-items-center';
+                    const title = document.createElement('span');
+                    title.textContent = manual.title;
+                    const revision = document.createElement('span');
+                    revision.className = 'badge bg-secondary';
+                    revision.textContent = `Rev: ${manual.revision}`;
+                    item.append(title, revision);
+                    list.append(item);
                 });
-                html += '</ul>';
-                manualListDiv.innerHTML = html;
+                manualListDiv.replaceChildren(list);
             } catch (err) {
-                manualListDiv.innerHTML = '<span class="text-danger">Failed to load manuals.</span>';
+                showMessage(
+                    manualListDiv,
+                    err.message || 'Failed to load manuals.',
+                    'text-danger'
+                );
             }
+        }
+
+        function showMessage(container, message, className = 'text-muted') {
+            const element = document.createElement('span');
+            element.className = className;
+            element.textContent = message;
+            container.replaceChildren(element);
+        }
+
+        function renderQueryResult(data, resultDiv) {
+            const fragment = document.createDocumentFragment();
+            const answer = document.createElement('p');
+            answer.className = 'mb-2';
+            const answerLabel = document.createElement('strong');
+            answerLabel.textContent = 'Answer: ';
+            answer.append(answerLabel, document.createTextNode(data.answer || ''));
+            fragment.append(answer);
+
+            const status = document.createElement('p');
+            status.className = 'mb-1';
+            const statusLabel = document.createElement('strong');
+            statusLabel.textContent = 'Status: ';
+            const statusBadge = document.createElement('span');
+            statusBadge.className =
+                `badge bg-${data.status === 'Answered' ? 'success' : 'warning'}`;
+            statusBadge.textContent = data.status || 'Unknown';
+            status.append(statusLabel, statusBadge);
+            fragment.append(status);
+
+            const citationsLabel = document.createElement('strong');
+            citationsLabel.textContent = 'Citations:';
+            fragment.append(citationsLabel);
+            const citations = document.createElement('ul');
+            citations.className = 'mt-2 mb-0 ps-3';
+            (Array.isArray(data.sources) ? data.sources : []).forEach(source => {
+                const item = document.createElement('li');
+                const detail = document.createElement('small');
+                detail.className = 'text-muted';
+                detail.textContent =
+                    `${source.document || 'Manual'} (Rev: ${source.revision || 'N/A'}) - Page ${source.page_number || 'N/A'}`;
+                item.append(detail);
+                citations.append(item);
+            });
+            fragment.append(citations);
+            resultDiv.replaceChildren(fragment);
         }
 
         document.getElementById('machineSelect').addEventListener('change', loadManualsForMachine);
@@ -128,7 +201,7 @@
 
         async function submitQuery() {
             const machineId = document.getElementById('machineSelect').value;
-            const query = document.getElementById('queryInput').value;
+            const query = document.getElementById('queryInput').value.trim();
             const resultDiv = document.getElementById('queryResult');
 
             if (!machineId) {
@@ -140,36 +213,42 @@
                 return;
             }
 
-            resultDiv.innerHTML = '<span class="text-info">Querying isolated manual embeddings...</span>';
+            showMessage(
+                resultDiv,
+                'Querying isolated manual embeddings...',
+                'text-info'
+            );
 
             try {
+                const csrfToken = document.querySelector(
+                    '#csrfTokenForm [name=csrfmiddlewaretoken]'
+                ).value;
                 const response = await fetch('/api/query-manual/', {
                     method: 'POST',
+                    credentials: 'same-origin',
                     headers: {
                         'Content-Type': 'application/json',
+                        'X-CSRFToken': csrfToken
                     },
                     body: JSON.stringify({ machine_id: machineId, query: query })
                 });
 
                 const data = await response.json();
                 if (response.ok) {
-                    let sourcesHtml = '<ul class="mt-2 mb-0 ps-3">';
-                    data.sources.forEach(src => {
-                        sourcesHtml += `<li><small class="text-muted"><strong>${src.document}</strong> (Rev: ${src.revision}) - Page ${src.page_number}</small></li>`;
-                    });
-                    sourcesHtml += '</ul>';
-
-                    resultDiv.innerHTML = `
-                        <p class="mb-2"><strong>Answer:</strong> ${data.answer}</p>
-                        <hr class="my-2">
-                        <p class="mb-1"><strong>Status:</strong> <span class="badge bg-${data.status === 'Answered' ? 'success' : 'warning'}">${data.status}</span></p>
-                        <p class="mb-0"><strong>Citations:</strong> ${sourcesHtml}</p>
-                    `;
+                    renderQueryResult(data, resultDiv);
                 } else {
-                    resultDiv.innerHTML = `<span class="text-danger">Error: ${JSON.stringify(data)}</span>`;
+                    showMessage(
+                        resultDiv,
+                        data.error || JSON.stringify(data),
+                        'text-danger'
+                    );
                 }
             } catch (err) {
-                resultDiv.innerHTML = `<span class="text-danger">Network error: ${err.message}</span>`;
+                showMessage(
+                    resultDiv,
+                    `Network error: ${err.message}`,
+                    'text-danger'
+                );
             }
         }
     </script>
